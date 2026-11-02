@@ -2,7 +2,10 @@ package net.xiondigital.anlasoz.ui.settings
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -59,8 +62,10 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import net.xiondigital.anlasoz.BuildConfig
+import net.xiondigital.anlasoz.ai.LocalModelState
 import net.xiondigital.anlasoz.ai.ProviderPresets
 import net.xiondigital.anlasoz.audio.SpeechController
+import net.xiondigital.anlasoz.local.ModelCatalog
 import net.xiondigital.anlasoz.data.model.ReplyStyle
 import net.xiondigital.anlasoz.ui.components.BrandCard
 import net.xiondigital.anlasoz.ui.components.BrandTopBar
@@ -99,7 +104,22 @@ fun SettingsScreen(
     }
     LifecycleResumeEffect(Unit) {
         viewModel.refreshKeyState()
+        viewModel.refreshModels()
         onPauseOrDispose { }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        uri?.let { viewModel.importModel(it, context.contentResolver) }
+    }
+
+    fun openModelBrowser() {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(ModelCatalog.HUGGING_FACE_GGUF_BROWSE)),
+            )
+        }
     }
 
     fun openTtsSettings() {
@@ -178,31 +198,36 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = Xion.MutedDim,
                 )
-                Spacer(Modifier.height(14.dp))
-                SectionLabel("Base URL", color = Xion.MutedDim)
-                Spacer(Modifier.height(6.dp))
-                InlineTextField(
-                    value = state.baseUrlDraft,
-                    onValueChange = viewModel::setBaseUrlDraft,
-                    placeholder = "https://api.example.com/v1",
-                    keyboardType = KeyboardType.Uri,
-                )
-                if (state.baseUrlDraft.trim().startsWith("http://")) {
+                if (state.onDevice) {
+                    Spacer(Modifier.height(12.dp))
+                    DeviceProviderSummary(state)
+                } else {
+                    Spacer(Modifier.height(14.dp))
+                    SectionLabel("Base URL", color = Xion.MutedDim)
                     Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "Plain HTTP is unencrypted. Keep it for a model on your own machine; use HTTPS for anything remote.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Xion.Warn,
+                    InlineTextField(
+                        value = state.baseUrlDraft,
+                        onValueChange = viewModel::setBaseUrlDraft,
+                        placeholder = "https://api.example.com/v1",
+                        keyboardType = KeyboardType.Uri,
+                    )
+                    if (state.baseUrlDraft.trim().startsWith("http://")) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Plain HTTP is unencrypted. Keep it for a model on your own machine; use HTTPS for anything remote.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Xion.Warn,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    SectionLabel("Model", color = Xion.MutedDim)
+                    Spacer(Modifier.height(6.dp))
+                    InlineTextField(
+                        value = state.modelDraft,
+                        onValueChange = viewModel::setModelDraft,
+                        placeholder = "model-name",
                     )
                 }
-                Spacer(Modifier.height(10.dp))
-                SectionLabel("Model", color = Xion.MutedDim)
-                Spacer(Modifier.height(6.dp))
-                InlineTextField(
-                    value = state.modelDraft,
-                    onValueChange = viewModel::setModelDraft,
-                    placeholder = "model-name",
-                )
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     PrimaryButton(
@@ -219,73 +244,91 @@ fun SettingsScreen(
                 Spacer(Modifier.height(10.dp))
                 ConnectionResult(state.testing)
 
-                Spacer(Modifier.height(16.dp))
-                Hairline()
-                Spacer(Modifier.height(14.dp))
+                if (!state.onDevice) {
+                    Spacer(Modifier.height(16.dp))
+                    Hairline()
+                    Spacer(Modifier.height(14.dp))
 
-                SectionLabel("API key", color = Xion.MutedDim)
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier
-                            .size(6.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(if (state.hasKey) Xion.Ok else Xion.MutedDim),
-                    )
-                    Spacer(Modifier.width(7.dp))
-                    Text(
-                        text = when {
-                            !state.hasKey -> "No key stored"
-                            state.keyEncrypted -> "Key stored · Android Keystore"
-                            else -> "Key stored · app-private storage"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (state.hasKey) Xion.Body else Xion.Muted,
-                    )
-                }
-                if (!state.keyEncrypted && state.hasKey) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "This device could not create a Keystore master key, so the key lives in app-private preferences instead.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Xion.Warn,
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    InlineTextField(
-                        value = state.keyDraft,
-                        onValueChange = viewModel::setKeyDraft,
-                        placeholder = if (state.hasKey) "Paste a new key to replace" else "Paste your API key",
-                        masked = !state.keyVisible,
-                        modifier = Modifier.weight(1f),
-                        keyboardType = KeyboardType.Password,
-                    )
-                    IconAction(
-                        icon = if (state.keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                        description = if (state.keyVisible) "Hide key" else "Show key",
-                        onClick = viewModel::toggleKeyVisible,
-                        tint = Xion.Muted,
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    SecondaryButton(text = "Save key", onClick = viewModel::saveKey)
-                    if (state.hasKey) {
-                        QuietTextButton(
-                            text = "Remove key",
-                            onClick = viewModel::clearKey,
-                            color = Xion.Danger,
+                    SectionLabel("API key", color = Xion.MutedDim)
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(if (state.hasKey) Xion.Ok else Xion.MutedDim),
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            text = when {
+                                !state.hasKey -> "No key stored"
+                                state.keyEncrypted -> "Key stored · Android Keystore"
+                                else -> "Key stored · app-private storage"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (state.hasKey) Xion.Body else Xion.Muted,
                         )
                     }
+                    if (!state.keyEncrypted && state.hasKey) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "This device could not create a Keystore master key, so the key lives in app-private preferences instead.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Xion.Warn,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        InlineTextField(
+                            value = state.keyDraft,
+                            onValueChange = viewModel::setKeyDraft,
+                            placeholder = if (state.hasKey) "Paste a new key to replace" else "Paste your API key",
+                            masked = !state.keyVisible,
+                            modifier = Modifier.weight(1f),
+                            keyboardType = KeyboardType.Password,
+                        )
+                        IconAction(
+                            icon = if (state.keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                            description = if (state.keyVisible) "Hide key" else "Show key",
+                            onClick = viewModel::toggleKeyVisible,
+                            tint = Xion.Muted,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        SecondaryButton(text = "Save key", onClick = viewModel::saveKey)
+                        if (state.hasKey) {
+                            QuietTextButton(
+                                text = "Remove key",
+                                onClick = viewModel::clearKey,
+                                color = Xion.Danger,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "The key never ships inside the APK and is not included in backups. For a shared or production build, put a small proxy in front of the provider and point the base URL at it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Xion.MutedDim,
+                    )
                 }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "The key never ships inside the APK and is not included in backups. For a shared or production build, put a small proxy in front of the provider and point the base URL at it.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Xion.MutedDim,
-                )
             }
+        }
+
+        // ---- on-device ----------------------------------------------------------
+        item {
+            LocalModelsCard(
+                state = state,
+                onSelectModel = viewModel::selectDeviceModel,
+                onDeleteModel = viewModel::deleteDeviceModel,
+                onDownload = viewModel::downloadModel,
+                onCancelDownload = viewModel::cancelDownload,
+                onImport = { importLauncher.launch(arrayOf("*/*")) },
+                onBrowse = { openModelBrowser() },
+                onLoad = viewModel::loadDeviceModel,
+                onUnload = viewModel::unloadDeviceModel,
+                onStop = viewModel::stopDeviceGeneration,
+            )
         }
 
         // ---- context -----------------------------------------------------------
@@ -507,6 +550,53 @@ fun SettingsScreen(
         )
     }
 
+}
+
+@Composable
+private fun DeviceProviderSummary(state: SettingsUiState) {
+    val engine = state.engine
+    val dot = when {
+        engine is LocalModelState.Ready -> Xion.Ok
+        engine is LocalModelState.Failed -> Xion.Danger
+        engine is LocalModelState.Loading -> Xion.BlueHi
+        else -> Xion.MutedDim
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(dot),
+        )
+        Spacer(Modifier.width(7.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = state.deviceModel.ifBlank { "No model selected" },
+                style = MaterialTheme.typography.titleMedium,
+                color = Xion.Ink,
+            )
+            Text(
+                text = when (engine) {
+                    is LocalModelState.Ready ->
+                        "Loaded on this phone · ${engine.contextSize} tokens of context"
+                    is LocalModelState.Loading -> "Loading into memory…"
+                    is LocalModelState.Failed -> engine.message
+                    LocalModelState.Unavailable -> "This build has no on-device engine"
+                    LocalModelState.Idle -> "Not loaded yet; it loads on the first message"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Xion.Muted,
+            )
+        }
+    }
+    if (state.deviceModels.isEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "Download a model in the card below, then tap Use.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Xion.Warn,
+        )
+    }
 }
 
 @Composable

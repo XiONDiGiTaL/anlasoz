@@ -13,6 +13,7 @@ import kotlinx.coroutines.launch
 import net.xiondigital.anlasoz.AppContainer
 import net.xiondigital.anlasoz.ai.AiException
 import net.xiondigital.anlasoz.ai.AiFailure
+import net.xiondigital.anlasoz.ai.ProviderPresets
 import net.xiondigital.anlasoz.core.TurkishText
 import net.xiondigital.anlasoz.data.model.Analysis
 import net.xiondigital.anlasoz.data.model.Direction
@@ -92,7 +93,11 @@ class TranslateViewModel(private val container: AppContainer) : ViewModel() {
         _state.update {
             it.copy(
                 hasKey = hasKey,
-                configured = hasKey && settings.baseUrl.isNotBlank() && settings.model.isNotBlank(),
+                configured = if (settings.presetId == ProviderPresets.device.id) {
+                    settings.deviceModel.isNotBlank()
+                } else {
+                    hasKey && settings.baseUrl.isNotBlank() && settings.model.isNotBlank()
+                },
             )
         }
     }

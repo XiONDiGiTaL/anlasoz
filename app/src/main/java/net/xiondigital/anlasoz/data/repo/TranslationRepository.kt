@@ -8,7 +8,9 @@ import net.xiondigital.anlasoz.ai.AiException
 import net.xiondigital.anlasoz.ai.AiFailure
 import net.xiondigital.anlasoz.ai.AnalysisParser
 import net.xiondigital.anlasoz.ai.ChatMessage
+import net.xiondigital.anlasoz.ai.LocalEngine
 import net.xiondigital.anlasoz.ai.Prompts
+import net.xiondigital.anlasoz.ai.ProviderPresets
 import net.xiondigital.anlasoz.core.TurkishText
 import net.xiondigital.anlasoz.data.db.AnalysisEntity
 import net.xiondigital.anlasoz.data.db.AppDatabase
@@ -25,6 +27,7 @@ import net.xiondigital.anlasoz.data.model.ReplyStyle
 import net.xiondigital.anlasoz.data.prefs.AppSettings
 import net.xiondigital.anlasoz.data.prefs.SecureKeyStore
 import net.xiondigital.anlasoz.data.prefs.SettingsStore
+import net.xiondigital.anlasoz.local.ModelStore
 
 /**
  * Orchestrates one translation turn: conversation context, model call, tolerant
@@ -34,6 +37,8 @@ class TranslationRepository(
     private val db: AppDatabase,
     private val settingsStore: SettingsStore,
     private val keyStore: SecureKeyStore,
+    private val localEngine: LocalEngine,
+    private val modelStore: ModelStore,
     private val ai: AiClient = AiClient(),
     private val parser: AnalysisParser = AnalysisParser(),
 ) {
@@ -143,7 +148,7 @@ class TranslationRepository(
         val hint = TurkishText.guessLanguage(message)
 
         val messages = listOf(
-            ChatMessage("system", Prompts.ANALYSIS_SYSTEM),
+            ChatMessage("system", systemPrompt(settings)),
             ChatMessage("user", Prompts.analysisUserMessage(message, context, hint)),
         )
         val result = runWithRepair(messages, settings, key) { parser.parseAnalysis(it) }
@@ -194,12 +199,69 @@ class TranslationRepository(
 
     suspend fun testConnection(): String {
         val settings = settingsStore.settings.first()
+        if (settings.presetId == ProviderPresets.device.id) {
+            val file = deviceModelFile(settings)
+            localEngine.preload(file)
+            return localEngine.complete(
+                file = file,
+                messages = listOf(
+                    ChatMessage("system", Prompts.TEST_SYSTEM),
+                    ChatMessage("user", "ping"),
+                ),
+                temperature = 0f,
+                maxTokens = 48,
+            ).trim().take(120)
+        }
         val key = keyStore.apiKey
         if (key.isBlank()) throw AiException(AiFailure.NO_KEY, "Missing API key")
         if (settings.baseUrl.isBlank() || settings.model.isBlank()) {
             throw AiException(AiFailure.NOT_CONFIGURED, "Missing base URL or model")
         }
         return ai.testConnection(settings.baseUrl, settings.model, key)
+    }
+
+    /** The device prompt is a compressed version of the same contract. */
+    private fun systemPrompt(settings: AppSettings): String =
+        if (settings.presetId == ProviderPresets.device.id) {
+            Prompts.ANALYSIS_SYSTEM_DEVICE
+        } else {
+            Prompts.ANALYSIS_SYSTEM
+        }
+
+    /** One call, whichever brain is selected. */
+    private suspend fun complete(
+        messages: List<ChatMessage>,
+        settings: AppSettings,
+        key: String,
+        temperature: Float,
+    ): String {
+        if (settings.presetId == ProviderPresets.device.id) {
+            return localEngine.complete(
+                file = deviceModelFile(settings),
+                messages = messages,
+                temperature = temperature,
+                maxTokens = DEVICE_MAX_TOKENS,
+            )
+        }
+        return ai.complete(
+            baseUrl = settings.baseUrl,
+            model = settings.model,
+            apiKey = key,
+            messages = messages,
+            temperature = temperature,
+        )
+    }
+
+    private fun deviceModelFile(settings: AppSettings): java.io.File {
+        val name = settings.deviceModel
+        if (name.isBlank()) {
+            throw AiException(AiFailure.NOT_CONFIGURED, "Choose an on-device model in Settings")
+        }
+        val file = modelStore.file(name)
+        if (!file.exists()) {
+            throw AiException(AiFailure.NOT_CONFIGURED, "The on-device model file is missing")
+        }
+        return file
     }
 
     /** One automatic JSON-repair round; never fabricates a result. */
@@ -209,26 +271,19 @@ class TranslationRepository(
         key: String,
         parse: (String) -> T,
     ): T {
-        val first = ai.complete(
-            baseUrl = settings.baseUrl,
-            model = settings.model,
-            apiKey = key,
-            messages = messages,
-            temperature = settings.temperature,
-        )
+        val first = complete(messages, settings, key, settings.temperature)
         return try {
             parse(first)
         } catch (e: AiException) {
             if (e.failure != AiFailure.MALFORMED) throw e
             if (e.message?.contains("no translation", ignoreCase = true) == true) throw e
-            val repaired = ai.complete(
-                baseUrl = settings.baseUrl,
-                model = settings.model,
-                apiKey = key,
+            val repaired = complete(
                 messages = messages + listOf(
                     ChatMessage("assistant", first.take(4000)),
                     ChatMessage("user", Prompts.REPAIR),
                 ),
+                settings = settings,
+                key = key,
                 temperature = 0.1f,
             )
             parse(repaired)
@@ -285,3 +340,6 @@ class TranslationRepository(
         return block.take(3600)
     }
 }
+
+/** Smaller than the remote budget: a 3B model on a phone must stay responsive. */
+private const val DEVICE_MAX_TOKENS = 900

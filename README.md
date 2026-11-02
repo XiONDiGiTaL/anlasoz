@@ -13,7 +13,8 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%2026%2B-3F80FF?style=flat-square" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-2.1-7F52FF?style=flat-square&logo=kotlin&logoColor=white" />
   <img alt="Compose" src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white" />
-  <img alt="Model" src="https://img.shields.io/badge/model-any%20OpenAI--compatible%20endpoint-ECEDEF?style=flat-square" />
+  <img alt="Model" src="https://img.shields.io/badge/model-cloud%20or%20on--device-ECEDEF?style=flat-square" />
+  <img alt="Engine" src="https://img.shields.io/badge/on--device-llama.cpp%20%2F%20GGUF-00A67E?style=flat-square" />
 </p>
 
 <p align="center">
@@ -23,9 +24,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/XiONDiGiTaL/anlasoz/releases/latest"><strong>↓ Download the signed APK (1.0.0)</strong></a>
+  <a href="https://github.com/XiONDiGiTaL/anlasoz/releases/latest"><strong>↓ Download the signed APK</strong></a>
   <br />
-  <sub>Android 8.0+ · installs alongside a debug build · set your own endpoint and key on first launch</sub>
+  <sub>Android 8.0+ · cloud endpoint with your own key, or a GGUF model running on the phone</sub>
 </p>
 
 ---
@@ -36,6 +37,7 @@
 - [The four screens](#the-four-screens)
 - [How the language layer works](#how-the-language-layer-works)
 - [Speech](#speech)
+- [On-device models](#on-device-models)
 - [Data, offline behaviour and privacy](#data-offline-behaviour-and-privacy)
 - [Design system](#design-system)
 - [Getting started](#getting-started)
@@ -58,7 +60,7 @@ AnlaSöz is built around that gap:
 - **It teaches the sentence you just received.** Vocabulary, suffixes and patterns are saved from real messages and turned into a review deck, instead of generic lessons.
 - **It answers back.** English in, natural Turkish out, with a back-translation you can check before sending.
 - **It hears it.** Every Turkish sentence can be spoken by the device's own `tr-TR` voice.
-- **It stays yours.** One key you own, stored in the Android Keystore, no analytics, no telemetry, history on the device.
+- **It stays yours.** One key you own, stored in the Android Keystore, no analytics, no telemetry, history on the device — or no key at all, with a GGUF model running inside the app.
 
 ---
 
@@ -184,6 +186,7 @@ ui/translate · ui/reply  →  TranslationRepository  →  AiClient (OkHttp)
 - **Repair, then fail.** A malformed response gets one automatic repair pass. If it still does not parse, the user sees a plain-language failure with a retry, and the input is preserved. Nothing is fabricated.
 - **Context assembly.** The repository sends the last few messages of the active thread (bounded, user-toggleable) plus any manual context, so *"Ben de"* is read against what it answers.
 - **Failure taxonomy.** No key, not configured, unauthorized, rate-limited, timeout, offline, malformed — each maps to a specific message and a next step, rather than a stack trace.
+- **Two interchangeable brains.** The same repository drives a hosted endpoint or a local llama.cpp model; only the call behind it changes. See [on-device models](#on-device-models).
 - **Speech is optional.** Typing never depends on a microphone; a device without a Turkish voice still gets every text feature plus a clear notice when you ask it to speak.
 
 ---
@@ -197,6 +200,49 @@ ui/translate · ui/reply  →  TranslationRepository  →  AiClient (OkHttp)
 
 ---
 
+## On-device models
+
+llama.cpp is compiled into the app, so a GGUF file can run the language work on the phone itself: no key, no network, no message leaving the device. Settings → **Model** → **On device**, then install or import a model in the card below it.
+
+<p align="center">
+  <img src="docs/on-device-settings.png" width="270" alt="On-device model manager" />
+  <img src="docs/on-device-result.png" width="270" alt="Analysis produced by the on-device model" />
+</p>
+
+**How it is wired.** `ai/LlamaBridge` is a small JNI surface over llama.cpp (load, generate once, cancel); `ai/LocalEngine` owns the single loaded model, serialises turns, enforces a memory guard and reports progress. `TranslationRepository` chooses the engine from the saved preset, so the parser, the repair round, Room and the UI are shared with the cloud path. The prompt is a compressed version of the same JSON contract (`Prompts.ANALYSIS_SYSTEM_DEVICE`) because a phone pays for every prompt token in seconds.
+
+**Models offered in the app** (sizes and SHA-256 are the publisher's; downloads are verified against both before the file is used):
+
+| Model | Size | Notes |
+| --- | --- | --- |
+| Vexium Core Light 1.5B | 1.12 GB | Default. Fits an 8 GB phone and finishes an analysis in about a minute. |
+| Vexium Core 3B | 2.10 GB | Noticeably better explanations; wants ~4 GB of free memory and a 12 GB phone to stay quick. |
+| Qwen2.5 0.5B | 491 MB | Engine smoke test. Too small to trust as a tutor. |
+
+**Measured on a Galaxy S23 Ultra (8 GB, Snapdragon 8 Gen 2, 6 threads)** with the 1.5B model, Android 15:
+
+| Stage | Result |
+| --- | --- |
+| Model load (memory-mapped) | 1–2 s |
+| Prompt (`~560` tokens after the compact prompt) | 40–55 s |
+| Generation | 8–13 tokens/s |
+| Whole analysis | 60–120 s (the first request after a load also pays a one-off ~10 s weight-repack) |
+
+The 3B model loads and runs on the same phone but is memory-bound: the system reclaims its mapped weights between tokens and throughput collapses, which is why it is no longer the recommended default.
+
+**Details that matter**
+
+- **Verification, not trust.** A download is hashed while it streams and only becomes a model when the byte count and the published SHA-256 match; a partial file stays `.part` and is deleted on failure. Imported files must start with the `GGUF` magic.
+- **Memory guard.** Before loading, the engine compares the file size plus headroom against `MemAvailable`. Refusing with "not enough memory" is deliberate: ggml aborts the process when an allocation fails, and a readable message beats a crash.
+- **ARMv8.2 baseline.** The native build uses `-march=armv8.2-a+dotprod+fp16`; without dot-product kernels quantised matmul is several times slower. Every phone that can hold a 1.5B model in memory has them.
+- **16 KB pages.** All native libraries are linked with `-z max-page-size=16384`, so Android 15's page-size check passes.
+- **Any GGUF works.** _Import .gguf_ takes a file from storage; _Browse models_ opens Hugging Face filtered to GGUF instruct models. One file at a time, 4 GB of context ceiling, 4k context.
+- **llama.cpp is a submodule**, pinned to tag `b12059` in `third_party/llama.cpp`. Clone with `--recursive`, and build the first time with Android NDK 27.2 and CMake 3.22 (Gradle downloads both through the SDK manager).
+
+**Honest limits.** A 1.5B model translates well and gets the literal structure right, but its tone reading is thinner than a hosted model's, its grammar notes are sometimes wrong, and it occasionally carries a phrase over from the conversation context. Local mode is the offline fallback and the private option; the cloud path is the better tutor.
+
+---
+
 ## Data, offline behaviour and privacy
 
 | What | Where | Survives restart | Leaves the device |
@@ -206,6 +252,7 @@ ui/translate · ui/reply  →  TranslationRepository  →  AiClient (OkHttp)
 | Provider key | `EncryptedSharedPreferences` (Android Keystore) | yes | only as an `Authorization` header |
 | Base URL, model, speech and context preferences | DataStore | yes | no |
 | Exports | app cache → share sheet | until cleared | only when you share them |
+| On-device model files | app-private `files/models/` | yes | no — the model runs in-process |
 
 - No analytics, crash reporting, ads or third-party SDKs. The dependency list is Compose, Room, DataStore, security-crypto, OkHttp, kotlinx-serialization and coroutines.
 - `allowBackup="false"`, with explicit cloud-backup and device-transfer exclusions for the database, the secure preferences and DataStore.
@@ -250,17 +297,19 @@ Settings is the fifth surface behind the gear icon:
 
 ## Getting started
 
-**Install** — download `anlasoz-1.0.0-release.apk` from [Releases](https://github.com/XiONDiGiTaL/anlasoz/releases/latest), allow installation from your file manager if Android asks, then open **Settings** and add your endpoint, model and key. The app ships with no credentials and no default provider.
+**Install** — download `anlasoz-1.1.0-release.apk` from [Releases](https://github.com/XiONDiGiTaL/anlasoz/releases/latest), allow installation from your file manager if Android asks, then open **Settings** and add your endpoint, model and key. The app ships with no credentials and no default provider.
 
 **Requirements** — Android Studio Ladybug or newer (or a JDK 17 command line), Android SDK platform 36, and a device or emulator on Android 8.0 (API 26) or newer. The project builds with Gradle 8.13, AGP 8.9.2, Kotlin 2.1.20 and the Compose BOM 2025.05.01.
 
 ```bash
-git clone https://github.com/XiONDiGiTaL/anlasoz.git
+git clone --recursive https://github.com/XiONDiGiTaL/anlasoz.git
 cd anlasoz
 
 ./gradlew assembleDebug      # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew installDebug       # or: adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+`--recursive` matters: the on-device engine is `third_party/llama.cpp`, pinned as a submodule. If you cloned without it, run `git submodule update --init --recursive`. The first native build needs **NDK 27.2** and **CMake 3.22** (`sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"`) and takes a few minutes; `local.properties` must point at that SDK.
 
 Open the folder in Android Studio and press Run if you prefer. `local.properties` is generated by the IDE and is not tracked.
 
@@ -276,6 +325,7 @@ Settings → **Model**. One configuration powers translation, interpretation and
 | OpenAI | `https://api.openai.com/v1` | a key from platform.openai.com |
 | OpenRouter | `https://openrouter.ai/api/v1` | one key, model names as `vendor/model` |
 | Z.ai | `https://api.z.ai/api/paas/v4` | GLM models |
+| On device | — | runs a GGUF file with llama.cpp inside the app; no key, no network |
 | Local server | `http://192.168.1.10:1234/v1` | LM Studio, Ollama, llama.cpp |
 | Custom | anything | your own proxy or gateway |
 
@@ -304,7 +354,7 @@ keytool -genkeypair -v -keystore keys/release.jks -alias anlasoz \
 
 $ANDROID_HOME/build-tools/<version>/apksigner sign \
         --ks keys/release.jks \
-        --out anlasoz-1.0.0-release.apk \
+        --out anlasoz-1.1.0-release.apk \
         app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
@@ -325,12 +375,15 @@ Versioning lives in `app/build.gradle.kts` (`versionCode` / `versionName`); bump
 | `MapperAndParserTest` | analysis JSON parsing, partial and malformed payloads, the Room mapper round-trip that once silently dropped structured lists |
 | `TurkishTextTest` | language detection and Turkish-aware word counting (`ı`, `ç`, `ğ`, `ö`, `ş`, `ü`) |
 | `AnalysisDaoTest` | the Translate feed excludes reply drafts while the thread keeps them |
+| `ModelCatalogTest` | every offered model is an https `.gguf` with a sane size and hash, exactly one is recommended, and the Settings wording for sizes stays stable |
 
 Lint reports 0 errors. The remaining warnings are resource-cleanup suggestions, one newer test dependency, and the deliberate cleartext allowance for local models.
 
-**Manual verification** on a Galaxy S23 Ultra: analysis round trip and persistence across restart, error and retry with input preserved, copy-to-clipboard, Turkish TTS with a real `tr-TR` voice, microphone permission and live recognition, vocabulary saving from an analysis and from history, practice grading, JSON export through the share sheet, large font scale, landscape, and the signed, minified release build that ships in Releases — configured against the same endpoint and confirmed to parse and render an analysis end to end.
+**Manual verification** on a Galaxy S23 Ultra: analysis round trip and persistence across restart, error and retry with input preserved, copy-to-clipboard, Turkish TTS with a real `tr-TR` voice, microphone permission and live recognition, vocabulary saving from an analysis and from history, practice grading, JSON export through the share sheet, large font scale, landscape, and the signed, minified release build.
 
-The screenshots in `docs/` come from the debug build against a deterministic local endpoint; the text shown is sample content, not a real conversation.
+**Local engine verification** on the same phone: a 1.5B GGUF downloaded inside the app and accepted only after its SHA-256 matched, loaded with the memory guard and llama.cpp log callback in place, an analysis generated, parsed and persisted (translation, breakdown, vocabulary, tone and confidence all populated), the model surviving a process restart, the 3B model refused cleanly when free memory was short rather than aborting the process, and every native library passing Android 15's 16 KB page-size check.
+
+The screenshots in `docs/` come from the debug build; the cloud screens use a deterministic local endpoint, and `on-device-*.png` are genuine runs of the 1.5B model on the phone.
 
 ---
 
@@ -362,7 +415,10 @@ MVVM with `StateFlow`; one `app` module, package boundaries as the seams to spli
 - **No server component ships here.** Distributing the app means adding the proxy described above.
 - **Tone labels are guidance.** A prompt steers the register; it is not a guarantee, and the back-translation is there so you can judge.
 - **Ambiguity is surfaced, not resolved.** When a message could mean two things, both readings are shown — the app will not pretend to know the relationship behind them.
-- **Possible next steps:** sentence-by-sentence playback for long messages, an in-app export browser, and a thin server example for shared deployments.
+- **On-device quality is a small model's quality.** Correct translations and structure, thinner interpretation than a hosted model, and an occasional grammar note that is simply wrong. The card says so before you download two gigabytes.
+- **On-device speed is CPU only.** No GPU/NNAPI delegate; a 1.5B analysis is a minute, and the 3B model needs a 12 GB phone to be pleasant. It is a fallback, not the primary brain.
+- **One model in memory at a time.** Switching models unloads the previous one, and a large model can be refused while other apps hold memory.
+- **Possible next steps:** GPU/NNAPI offload for the local engine, sentence-by-sentence playback for long messages, and a thin server example for shared deployments.
 
 ---
 

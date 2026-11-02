@@ -46,6 +46,15 @@ object ProviderPresets {
         hint = "GLM models over an OpenAI-compatible endpoint.",
     )
 
+    /** Runs a GGUF file in this process through llama.cpp — no key, no network. */
+    val device = ProviderPreset(
+        id = "device",
+        name = "On device",
+        baseUrl = "",
+        model = "",
+        hint = "A GGUF model loaded on this phone. Nothing leaves the device and no key is needed.",
+    )
+
     val local = ProviderPreset(
         id = "local",
         name = "Local server",
@@ -62,7 +71,8 @@ object ProviderPresets {
         hint = "Any OpenAI-compatible base URL, including your own proxy.",
     )
 
-    val all: List<ProviderPreset> = listOf(freebuff, openai, openrouter, zai, local, custom)
+    val all: List<ProviderPreset> =
+        listOf(freebuff, openai, openrouter, zai, device, local, custom)
 
     fun byId(id: String?): ProviderPreset = all.firstOrNull { it.id == id } ?: freebuff
 

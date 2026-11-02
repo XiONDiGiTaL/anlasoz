@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import net.xiondigital.anlasoz.AppContainer
 import net.xiondigital.anlasoz.ai.AiException
 import net.xiondigital.anlasoz.ai.AiFailure
+import net.xiondigital.anlasoz.ai.ProviderPresets
 import net.xiondigital.anlasoz.data.model.Analysis
 import net.xiondigital.anlasoz.data.model.ReplyStyle
 import net.xiondigital.anlasoz.ui.translate.TranslateStatus
@@ -63,7 +64,13 @@ class ReplyViewModel(private val container: AppContainer) : ViewModel() {
         val settings = container.settings.settings.first()
         val hasKey = container.keys.apiKey.isNotBlank()
         _state.update {
-            it.copy(configured = hasKey && settings.baseUrl.isNotBlank() && settings.model.isNotBlank())
+            it.copy(
+                configured = if (settings.presetId == ProviderPresets.device.id) {
+                    settings.deviceModel.isNotBlank()
+                } else {
+                    hasKey && settings.baseUrl.isNotBlank() && settings.model.isNotBlank()
+                },
+            )
         }
     }
 

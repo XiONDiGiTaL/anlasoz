@@ -268,7 +268,7 @@ fun TranslateScreen(
                         text = if (state.configured) {
                             "Turkish in, English out — or the reverse, with the reasoning."
                         } else {
-                            "A model endpoint is needed once before the first analysis."
+                            "Choose a model in Settings before the first analysis."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = Xion.MutedDim,

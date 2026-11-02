@@ -14,10 +14,30 @@ android {
         applicationId = "net.xiondigital.anlasoz"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         resourceConfigurations += listOf("en", "tr")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // On-device inference runs llama.cpp through JNI. Phones are arm64;
+        // other ABIs would triple the APK for nobody's benefit.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
+            }
+        }
+    }
+
+    ndkVersion = "27.2.12479018"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildFeatures {

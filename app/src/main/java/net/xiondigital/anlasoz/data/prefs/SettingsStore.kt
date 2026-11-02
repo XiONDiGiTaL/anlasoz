@@ -28,6 +28,8 @@ data class AppSettings(
     val defaultStyle: ReplyStyle = ReplyStyle.NATURAL,
     val activeThreadId: Long = 0L,
     val preferLocalPronunciation: Boolean = true,
+    /** File name inside the app's models directory, used when the preset is "device". */
+    val deviceModel: String = "",
 )
 
 class SettingsStore(private val context: Context) {
@@ -46,6 +48,7 @@ class SettingsStore(private val context: Context) {
             defaultStyle = ReplyStyle.from(prefs[Keys.DEFAULT_STYLE]),
             activeThreadId = prefs[Keys.ACTIVE_THREAD] ?: 0L,
             preferLocalPronunciation = prefs[Keys.LOCAL_PRONUNCIATION] ?: true,
+            deviceModel = prefs[Keys.DEVICE_MODEL] ?: "",
         )
     }
 
@@ -104,6 +107,10 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[Keys.LOCAL_PRONUNCIATION] = value }
     }
 
+    suspend fun setDeviceModel(fileName: String) {
+        context.dataStore.edit { it[Keys.DEVICE_MODEL] = fileName }
+    }
+
     private object Keys {
         val PRESET = stringPreferencesKey("provider_preset")
         val BASE_URL = stringPreferencesKey("base_url")
@@ -117,5 +124,6 @@ class SettingsStore(private val context: Context) {
         val DEFAULT_STYLE = stringPreferencesKey("default_style")
         val ACTIVE_THREAD = longPreferencesKey("active_thread")
         val LOCAL_PRONUNCIATION = booleanPreferencesKey("local_pronunciation")
+        val DEVICE_MODEL = stringPreferencesKey("device_model")
     }
 }

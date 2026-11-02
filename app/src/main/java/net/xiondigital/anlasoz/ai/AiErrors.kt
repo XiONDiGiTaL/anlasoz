@@ -11,6 +11,7 @@ enum class AiFailure {
     MALFORMED,
     EMPTY,
     CANCELLED,
+    MEMORY,
     UNKNOWN,
 }
 
@@ -33,6 +34,7 @@ val AiFailure.headline: String
         AiFailure.MALFORMED -> "Unreadable model reply"
         AiFailure.EMPTY -> "Nothing to analyze"
         AiFailure.CANCELLED -> "Cancelled"
+        AiFailure.MEMORY -> "Not enough memory"
         AiFailure.UNKNOWN -> "Something went wrong"
     }
 
@@ -48,5 +50,6 @@ val AiFailure.detail: String
         AiFailure.MALFORMED -> "The model did not return the expected JSON. Retry, or switch to a model with reliable JSON mode."
         AiFailure.EMPTY -> "Type or paste a message first."
         AiFailure.CANCELLED -> "The request was cancelled."
+        AiFailure.MEMORY -> "Close other apps, or choose a smaller on-device model in Settings."
         AiFailure.UNKNOWN -> "Try again."
     }

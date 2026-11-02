@@ -1,8 +1,11 @@
 package net.xiondigital.anlasoz.ui.settings
 
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.xiondigital.anlasoz.AppContainer
 import net.xiondigital.anlasoz.ai.AiException
 import net.xiondigital.anlasoz.ai.AiFailure
@@ -19,8 +23,13 @@ import net.xiondigital.anlasoz.ai.ProviderPresets
 import net.xiondigital.anlasoz.ai.detail
 import net.xiondigital.anlasoz.ai.headline
 import net.xiondigital.anlasoz.audio.TtsState
+import net.xiondigital.anlasoz.ai.LocalModelState
 import net.xiondigital.anlasoz.data.model.ReplyStyle
 import net.xiondigital.anlasoz.data.repo.LibraryStats
+import net.xiondigital.anlasoz.local.DownloadState
+import net.xiondigital.anlasoz.local.LocalModelFile
+import net.xiondigital.anlasoz.local.LocalModelSource
+import net.xiondigital.anlasoz.local.ModelCatalog
 
 sealed interface ConnectionTest {
     data object Idle : ConnectionTest
@@ -52,8 +61,18 @@ data class SettingsUiState(
     val tts: TtsState = TtsState(),
     val message: String? = null,
     val clearing: Boolean = false,
+    // ---- on-device engine ----------------------------------------------------
+    val engineAvailable: Boolean = true,
+    val engine: LocalModelState = LocalModelState.Idle,
+    val generatedTokens: Int = 0,
+    val deviceModels: List<LocalModelFile> = emptyList(),
+    val deviceModel: String = "",
+    val downloads: Map<String, DownloadState> = emptyMap(),
+    val importing: Boolean = false,
+    val freeStorage: Long = 0L,
 ) {
     val preset: ProviderPreset get() = ProviderPresets.byId(presetId)
+    val onDevice: Boolean get() = presetId == ProviderPresets.device.id
 }
 
 class SettingsViewModel(private val container: AppContainer) : ViewModel() {
@@ -107,7 +126,118 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                 _state.update { it.copy(tts = tts) }
             }
         }
+        viewModelScope.launch {
+            container.settings.settings.collect { settings ->
+                _state.update { it.copy(deviceModel = settings.deviceModel) }
+            }
+        }
+        viewModelScope.launch {
+            container.localEngine.state.collect { engine ->
+                _state.update { it.copy(engine = engine) }
+            }
+        }
+        viewModelScope.launch {
+            container.localEngine.tokens.collect { tokens ->
+                _state.update { it.copy(generatedTokens = tokens) }
+            }
+        }
+        viewModelScope.launch {
+            container.downloads.states.collect { downloads ->
+                _state.update { it.copy(downloads = downloads) }
+                val finished = downloads.values.filterIsInstance<DownloadState.Done>()
+                if (finished.isNotEmpty()) refreshModels()
+            }
+        }
+        refreshModels()
         refreshKeyState()
+    }
+
+    // ---- on-device models ----------------------------------------------------
+
+    fun refreshModels() {
+        _state.update {
+            it.copy(
+                engineAvailable = container.localEngine.isAvailable,
+                deviceModels = container.models.list(),
+                freeStorage = container.models.freeBytes(),
+            )
+        }
+    }
+
+    fun selectDeviceModel(fileName: String) {
+        viewModelScope.launch {
+            if (_state.value.deviceModel != fileName) container.localEngine.unload()
+            container.settings.setDeviceModel(fileName)
+            show("$fileName is the on-device model")
+        }
+    }
+
+    fun deleteDeviceModel(fileName: String) {
+        if (_state.value.engine is LocalModelState.Ready &&
+            (_state.value.engine as LocalModelState.Ready).fileName == fileName
+        ) {
+            container.localEngine.unload()
+        }
+        val removed = container.models.delete(fileName)
+        if (removed && _state.value.deviceModel == fileName) {
+            viewModelScope.launch { container.settings.setDeviceModel("") }
+        }
+        refreshModels()
+        show(if (removed) "Model deleted" else "The file could not be deleted")
+    }
+
+    fun downloadModel(source: LocalModelSource) {
+        container.downloads.start(source)
+        show("Downloading ${source.name}")
+    }
+
+    fun cancelDownload(sourceId: String) {
+        container.downloads.cancel(sourceId)
+    }
+
+    fun importModel(uri: Uri, resolver: ContentResolver) {
+        viewModelScope.launch {
+            _state.update { it.copy(importing = true) }
+            try {
+                val imported = withContext(Dispatchers.IO) { container.models.import(uri) }
+                container.settings.setDeviceModel(imported.name)
+                refreshModels()
+                show("${imported.name} imported")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                show(e.message?.take(120) ?: "The import failed")
+            } finally {
+                _state.update { it.copy(importing = false) }
+            }
+        }
+    }
+
+    fun loadDeviceModel() {
+        val fileName = _state.value.deviceModel
+        if (fileName.isBlank()) {
+            show("Choose a model first")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                container.localEngine.preload(container.models.file(fileName))
+                show("$fileName loaded")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                show((e as? AiException)?.message ?: "The model could not be loaded")
+            }
+        }
+    }
+
+    fun unloadDeviceModel() {
+        container.localEngine.unload()
+        show("Model unloaded")
+    }
+
+    fun stopDeviceGeneration() {
+        container.localEngine.cancel()
     }
 
     fun refreshKeyState() {

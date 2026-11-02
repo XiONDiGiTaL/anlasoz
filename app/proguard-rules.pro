@@ -14,3 +14,9 @@
 -keepclasseswithmembers class net.xiondigital.anlasoz.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# JNI: llama.cpp entry points are matched by class and method name at runtime.
+-keep class net.xiondigital.anlasoz.ai.LlamaBridge { *; }
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
