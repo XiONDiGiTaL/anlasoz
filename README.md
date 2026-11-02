@@ -22,6 +22,12 @@
   <img src="docs/learn.png" width="250" alt="Learn screen" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/XiONDiGiTaL/anlasoz/releases/latest"><strong>↓ Download the signed APK (1.0.0)</strong></a>
+  <br />
+  <sub>Android 8.0+ · installs alongside a debug build · set your own endpoint and key on first launch</sub>
+</p>
+
 ---
 
 ## Contents
@@ -243,6 +249,8 @@ Settings is the fifth surface behind the gear icon:
 ---
 
 ## Getting started
+
+**Install** — download `anlasoz-1.0.0-release.apk` from [Releases](https://github.com/XiONDiGiTaL/anlasoz/releases/latest), allow installation from your file manager if Android asks, then open **Settings** and add your endpoint, model and key. The app ships with no credentials and no default provider.
 
 **Requirements** — Android Studio Ladybug or newer (or a JDK 17 command line), Android SDK platform 36, and a device or emulator on Android 8.0 (API 26) or newer. The project builds with Gradle 8.13, AGP 8.9.2, Kotlin 2.1.20 and the Compose BOM 2025.05.01.
 
