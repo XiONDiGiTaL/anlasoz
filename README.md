@@ -328,7 +328,7 @@ Versioning lives in `app/build.gradle.kts` (`versionCode` / `versionName`); bump
 
 Lint reports 0 errors. The remaining warnings are resource-cleanup suggestions, one newer test dependency, and the deliberate cleartext allowance for local models.
 
-**Manual verification** on a Galaxy S23 Ultra: analysis round trip and persistence across restart, error and retry with input preserved, copy-to-clipboard, Turkish TTS with a real `tr-TR` voice, microphone permission and live recognition, vocabulary saving from an analysis and from history, practice grading, JSON export through the share sheet, large font scale, landscape, and a signed, minified release build that launches and reaches the same screens.
+**Manual verification** on a Galaxy S23 Ultra: analysis round trip and persistence across restart, error and retry with input preserved, copy-to-clipboard, Turkish TTS with a real `tr-TR` voice, microphone permission and live recognition, vocabulary saving from an analysis and from history, practice grading, JSON export through the share sheet, large font scale, landscape, and the signed, minified release build that ships in Releases — configured against the same endpoint and confirmed to parse and render an analysis end to end.
 
 The screenshots in `docs/` come from the debug build against a deterministic local endpoint; the text shown is sample content, not a real conversation.
 
