@@ -1,0 +1,35 @@
+# ANSI: keep this file ASCII-safe except where Turkish examples are needed.
+
+# Gradle / build output
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+*.ap_
+dist/
+
+# Local machine configuration
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing material — never commit keys or keystores
+keys/
+*.jks
+*.keystore
+*.p12
+*.pepk
+
+# Secrets
+.env
+.env.*
+*.properties.local
+secrets.properties
+
+# OS noise
+.DS_Store
+Thumbs.db

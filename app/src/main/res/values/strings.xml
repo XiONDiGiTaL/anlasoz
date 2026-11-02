@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AnlaSöz</string>
+    <string name="nav_translate">Translate</string>
+    <string name="nav_reply">Reply</string>
+    <string name="nav_learn">Learn</string>
+    <string name="nav_history">History</string>
+</resources>

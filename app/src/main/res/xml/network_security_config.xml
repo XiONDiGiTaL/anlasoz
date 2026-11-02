@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Remote providers are expected over HTTPS. Cleartext is permitted so that a
+  model running on the user's own machine (LM Studio, Ollama, llama.cpp) can be
+  reached at a loopback or LAN address; Settings warns when an http:// endpoint
+  is configured. To enforce HTTPS only, set cleartextTrafficPermitted="false"
+  in base-config.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
