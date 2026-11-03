@@ -23,7 +23,19 @@ object LlamaBridge {
 
     external fun backendInfo(): String
 
-    external fun loadModel(path: String, nCtx: Int, nThreads: Int): Long
+    /** True when this build carries a GPU backend (Vulkan); CPU-only builds say false. */
+    external fun supportsGpuOffload(): Boolean
+
+    /** Hardware name of the GPU backend, or "" when there is none. */
+    external fun gpuDeviceName(): String
+
+    /**
+     * @param gpuLayers 0 keeps everything on the CPU, a negative count asks for
+     *   every layer the backend will accept.
+     */
+    external fun loadModel(path: String, nCtx: Int, nThreads: Int, gpuLayers: Int): Long
+
+    external fun modelLayerCount(handle: Long): Int
 
     external fun freeModel(handle: Long)
 

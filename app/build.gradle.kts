@@ -6,16 +6,33 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// GPU offload is compiled in only when a Vulkan SDK is pointed at: llama.cpp's
+// Vulkan backend compiles its compute shaders to SPIR-V at build time, which
+// needs glslc and a host compiler that the Android NDK does not provide.
+// Point VULKAN_SDK at an SDK root (bin/glslc, include/vulkan) to enable it;
+// without it the app builds CPU-only and never offers the offload switch.
+val vulkanSdk: String? = System.getenv("VULKAN_SDK")?.trim()?.takeIf { it.isNotEmpty() }
+val vulkanGlslc: File? = vulkanSdk?.let { root ->
+    listOf("bin/glslc.exe", "bin/glslc").map { File(root, it) }.firstOrNull { it.isFile }
+}
+if (vulkanSdk != null && vulkanGlslc == null) {
+    throw GradleException("VULKAN_SDK=$vulkanSdk has no bin/glslc executable")
+}
+
 android {
     namespace = "net.xiondigital.anlasoz"
     compileSdk = 36
 
     defaultConfig {
         applicationId = "net.xiondigital.anlasoz"
-        minSdk = 26
+        // Vulkan 1.1 arrived with Android 9: the NDK stubs below API 28 carry
+        // only the 1.0 entry points, and llama.cpp's Vulkan backend needs 1.1.
+        // Only a GPU build has that requirement, so a CPU-only build keeps
+        // running on Android 8.0.
+        minSdk = if (vulkanSdk != null && vulkanGlslc != null) 28 else 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
         resourceConfigurations += listOf("en", "tr")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -27,6 +44,16 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
+                arguments += if (vulkanSdk != null && vulkanGlslc != null) {
+                    listOf(
+                        "-DANLASOZ_VULKAN=ON",
+                        "-DVulkan_INCLUDE_DIR=${File(vulkanSdk, "include").path}",
+                        "-DVulkan_GLSLC_EXECUTABLE=${vulkanGlslc.path}",
+                        "-DCMAKE_PREFIX_PATH=$vulkanSdk",
+                    )
+                } else {
+                    listOf("-DANLASOZ_VULKAN=OFF")
+                }
             }
         }
     }

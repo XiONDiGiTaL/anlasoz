@@ -7,14 +7,18 @@
 
 #include <android/log.h>
 #include <jni.h>
+#include <sys/system_properties.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "llama.h"
 
@@ -30,6 +34,8 @@ struct Engine {
     const llama_vocab * vocab = nullptr;
     int n_ctx = 0;
     int n_threads = 4;
+    int n_layer = 0;
+    int gpu_layers = 0;
     std::atomic<bool> cancel{false};
     std::mutex mu;
 
@@ -55,6 +61,21 @@ std::string to_std(JNIEnv * env, jstring value) {
 void throw_illegal(JNIEnv * env, const char * message) {
     jclass cls = env->FindClass("java/lang/IllegalStateException");
     if (cls != nullptr) env->ThrowNew(cls, message);
+}
+
+// ggml-vulkan is C++ underneath its C API and throws on a failed pipeline or
+// dispatch. Nothing above it catches that, and an uncaught exception ends the
+// process — which on Android looks like an out-of-memory kill with no message.
+// A phone driver that rejects a shader is a real thing (Qualcomm Adreno does it
+// for some quantised matmul shaders), so this is caught, labelled, and handed to
+// Kotlin, which reloads the model on the CPU instead.
+constexpr const char * GPU_REJECTED = "GPU_UNAVAILABLE";
+
+void throw_gpu_rejected(JNIEnv * env, const char * detail) {
+    std::string message = GPU_REJECTED;
+    message += ": ";
+    message += detail != nullptr ? detail : "the GPU rejected the model's shaders";
+    throw_illegal(env, message.c_str());
 }
 
 // Applies the model's own chat template so each family gets the prompt shape it
@@ -127,12 +148,21 @@ void log_to_android(enum ggml_log_level level, const char * text, void *) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "%s", text);
     } else if (level == GGML_LOG_LEVEL_WARN) {
         __android_log_print(ANDROID_LOG_WARN, TAG, "%s", text);
+    } else if (getenv("ANLASOZ_VK_DEBUG") != nullptr) {
+        __android_log_print(ANDROID_LOG_DEBUG, TAG, "%s", text);
     }
 }
 
 JNIEXPORT void JNICALL
 Java_net_xiondigital_anlasoz_ai_LlamaBridge_backendInit(JNIEnv *, jclass) {
     llama_log_set(log_to_android, nullptr);
+    // ggml's own debug logging is off by default: it prints every graph node and
+    // measurably slows generation. adb shell setprop debug.anlasoz.vk 1 turns it
+    // on, which is the only way to see which device or pipeline it picked.
+    char property[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("debug.anlasoz.vk", property) > 0 && property[0] == '1') {
+        setenv("ANLASOZ_VK_DEBUG", "1", 1);
+    }
     llama_backend_init();
     LOGI("backend: %s", llama_print_system_info());
 }
@@ -144,24 +174,95 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_backendInfo(JNIEnv * env, jclass) {
 }
 
 JNIEXPORT jlong JNICALL
+Java_net_xiondigital_anlasoz_ai_LlamaBridge_supportsGpuOffload(JNIEnv *, jclass) {
+    return llama_supports_gpu_offload() ? JNI_TRUE : JNI_FALSE;
+}
+
+// First GPU or integrated GPU ggml registered, e.g. "Adreno (TM) 740". Empty
+// when the build is CPU-only or the driver exposed no usable device.
+JNIEXPORT jstring JNICALL
+Java_net_xiondigital_anlasoz_ai_LlamaBridge_gpuDeviceName(JNIEnv * env, jclass) {
+    llama_backend_init();
+    const int count = (int) ggml_backend_dev_count();
+    for (int i = 0; i < count; ++i) {
+        ggml_backend_dev_t device = ggml_backend_dev_get((size_t) i);
+        if (device == nullptr) continue;
+        const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+        if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            continue;
+        }
+        // The ggml name is a registry key ("Vulkan0"); the description is the
+        // hardware ("Adreno (TM) 740"), which is what a person recognises.
+        const char * description = ggml_backend_dev_description(device);
+        const char * name = ggml_backend_dev_name(device);
+        const char * label = (description != nullptr && description[0] != '\0') ? description : name;
+        return env->NewStringUTF(label != nullptr ? label : "");
+    }
+    return env->NewStringUTF("");
+}
+
+// The ggml CPU device, for the NULL-terminated device list that keeps a
+// CPU-only load away from the GPU backend.
+//
+// This matters more than it looks. A build that carries Vulkan registers a
+// Vulkan_Host device as well, and llama.cpp's scheduler will happily split a
+// graph between it and the CPU even when every layer is on the CPU. Each split
+// boundary costs a copy and a scheduler round trip, the host device is not given
+// the context's thread count, and a 24-layer model then runs on roughly one
+// core instead of all of them. Naming the CPU device explicitly means the
+// scheduler has nothing else to choose from.
+ggml_backend_dev_t cpu_device() {
+    const size_t count = ggml_backend_dev_count();
+    for (size_t i = 0; i < count; ++i) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(i);
+        if (device != nullptr && ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+            return device;
+        }
+    }
+    return nullptr;
+}
+
+JNIEXPORT jint JNICALL
+Java_net_xiondigital_anlasoz_ai_LlamaBridge_modelLayerCount(JNIEnv *, jclass, jlong handle) {
+    auto * engine = as_engine(handle);
+    return engine != nullptr ? engine->n_layer : 0;
+}
+
+JNIEXPORT jlong JNICALL
 Java_net_xiondigital_anlasoz_ai_LlamaBridge_loadModel(
-    JNIEnv * env, jclass, jstring path, jint n_ctx, jint n_threads) {
+    JNIEnv * env, jclass, jstring path, jint n_ctx, jint n_threads, jint gpu_layers) {
     const std::string file = to_std(env, path);
     if (file.empty()) {
         throw_illegal(env, "No model file");
         return 0L;
     }
 
+    llama_backend_init();
+
     auto * engine = new Engine();
     engine->n_ctx = n_ctx > 0 ? n_ctx : 4096;
     engine->n_threads = n_threads > 0 ? n_threads : 4;
+    engine->gpu_layers = gpu_layers;
 
-    // Defaults are what a phone wants: no GPU offload, memory-mapped weights so
-    // the 2 GB file does not have to sit in anonymous memory.
+    // Memory-mapped weights so the 2 GB file does not have to sit in anonymous
+    // memory. gpu_layers is 0 for CPU-only and negative for "every layer the
+    // backend will take": on a phone the weights live in the same RAM either
+    // way, but the matrix maths moves to the GPU.
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    model_params.n_gpu_layers = gpu_layers;
 
-    LOGI("loading %s (ctx=%d threads=%d)", file.c_str(), engine->n_ctx, engine->n_threads);
+    // A CPU-only load is pinned to the CPU device so the scheduler cannot split
+    // the graph with the GPU backend (see cpu_device above). Static so the
+    // pointer stays valid for as long as llama.cpp may read it.
+    static ggml_backend_dev_t cpu_only_devices[2] = {nullptr, nullptr};
+    if (gpu_layers == 0) {
+        if (cpu_only_devices[0] == nullptr) cpu_only_devices[0] = cpu_device();
+        if (cpu_only_devices[0] != nullptr) model_params.devices = cpu_only_devices;
+    }
+
+    LOGI(
+        "loading %s (ctx=%d threads=%d gpu_layers=%d)",
+        file.c_str(), engine->n_ctx, engine->n_threads, gpu_layers);
     engine->model = llama_model_load_from_file(file.c_str(), model_params);
     if (engine->model == nullptr) {
         delete engine;
@@ -169,14 +270,16 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_loadModel(
         return 0L;
     }
 
-    // Memory, not throughput, is the constraint on a phone. A 512-token
-    // microbatch at a 152k vocabulary alone asks for ~310 MB of logits, and
-    // ggml aborts when the allocation fails. Small microbatches keep the
-    // transient buffers small; llama.cpp splits long prompts across them.
+    // Memory, not throughput, is the constraint on a phone, and prompt time is
+    // where an analysis is won or lost. At a 256-token microbatch the logits of
+    // a 152k vocabulary already ask for ~155 MB, which is close to the limit a
+    // phone will hand out; going bigger buys little and risks ggml aborting on a
+    // failed allocation. 256 measured 105 tokens/s of prompt on an Adreno 740
+    // phone against 37 tokens/s at 128.
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = (uint32_t) engine->n_ctx;
-    ctx_params.n_batch = 256;
-    ctx_params.n_ubatch = 128;
+    ctx_params.n_batch = 512;
+    ctx_params.n_ubatch = 256;
     ctx_params.n_threads = engine->n_threads;
     ctx_params.n_threads_batch = engine->n_threads;
 
@@ -187,7 +290,16 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_loadModel(
         return 0L;
     }
     engine->vocab = llama_model_get_vocab(engine->model);
-    LOGI("model ready");
+    engine->n_layer = llama_model_n_layer(engine->model);
+    // Logged because a context that quietly ran on one thread instead of all of
+    // them is the difference between a few seconds and a minute, and nothing
+    // else in the app can see the thread count llama.cpp settled on.
+    LOGI(
+        "model ready: %d layers, %d requested on the gpu, %d/%d threads",
+        engine->n_layer,
+        gpu_layers,
+        llama_n_threads(engine->ctx),
+        llama_n_threads_batch(engine->ctx));
     return reinterpret_cast<jlong>(engine);
 }
 
@@ -263,6 +375,7 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_generate(
         throw_illegal(env, "The message is too long for this model's context");
         return nullptr;
     }
+    LOGI("prompt is %d tokens, %d left for the answer", (int) tokens.size(), budget);
     int limit = max_tokens > 0 ? max_tokens : 1024;
     if (limit > budget) limit = budget;
 
@@ -275,13 +388,31 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_generate(
     // tracked by the context, so successive slices continue naturally.
     const int64_t prompt_started = ggml_time_ms();
     const size_t chunk = 256;
+    bool gpu_rejected = false;
+    std::string gpu_detail;
     for (size_t offset = 0; offset < tokens.size(); offset += chunk) {
         const size_t count = std::min(chunk, tokens.size() - offset);
         llama_batch batch = llama_batch_get_one(tokens.data() + offset, (int32_t) count);
-        if (llama_decode(engine->ctx, batch) != 0) {
+        int32_t status = 0;
+        try {
+            status = llama_decode(engine->ctx, batch);
+        } catch (const std::exception & error) {
+            gpu_detail = error.what();
+            gpu_rejected = true;
+            break;
+        } catch (...) {
+            gpu_rejected = true;
+            break;
+        }
+        if (status != 0) {
             throw_illegal(env, "The model failed to read the prompt");
             return nullptr;
         }
+    }
+    if (gpu_rejected) {
+        LOGE("prompt decode failed: %s", gpu_detail.c_str());
+        throw_gpu_rejected(env, gpu_detail.c_str());
+        return nullptr;
     }
     LOGI(
         "prompt %d tokens decoded in %lld ms",
@@ -299,7 +430,17 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_generate(
     jmethodID report = nullptr;
     if (progress != nullptr) {
         jclass cls = env->GetObjectClass(progress);
-        report = env->GetMethodID(cls, "onProgress", "(I)V");
+        if (cls != nullptr) {
+            report = env->GetMethodID(cls, "onProgress", "(I)V");
+            env->DeleteLocalRef(cls);
+        }
+        // A failed lookup leaves a pending exception, and returning to Java with
+        // one set turns a cosmetic progress counter into a process-wide
+        // NoSuchMethodError. The counter is not worth that: drop it instead.
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            report = nullptr;
+        }
     }
 
     const int64_t started = ggml_time_ms();
@@ -339,7 +480,18 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_generate(
         }
 
         llama_batch next = llama_batch_get_one(&token, 1);
-        if (llama_decode(engine->ctx, next) != 0) {
+        int32_t status = 0;
+        try {
+            status = llama_decode(engine->ctx, next);
+        } catch (const std::exception & error) {
+            gpu_detail = error.what();
+            gpu_rejected = true;
+            break;
+        } catch (...) {
+            gpu_rejected = true;
+            break;
+        }
+        if (status != 0) {
             failed = true;
             break;
         }
@@ -347,6 +499,11 @@ Java_net_xiondigital_anlasoz_ai_LlamaBridge_generate(
 
     llama_sampler_free(sampler);
 
+    if (gpu_rejected) {
+        LOGE("generation failed: %s", gpu_detail.c_str());
+        throw_gpu_rejected(env, gpu_detail.c_str());
+        return nullptr;
+    }
     if (failed) {
         throw_illegal(env, "The model stopped unexpectedly while generating");
         return nullptr;

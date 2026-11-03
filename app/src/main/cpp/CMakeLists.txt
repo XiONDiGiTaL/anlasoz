@@ -16,6 +16,27 @@ set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
+# GPU offload. llama.cpp reaches the phone's GPU through its Vulkan backend,
+# which is not something the NDK can build on its own: it needs glslc, the
+# Vulkan headers and a host C++ compiler, because the compute shaders are
+# compiled to SPIR-V while the app is being built. Those live outside the
+# project, so the backend is opt-in. Without it the engine stays CPU-only and
+# the app simply does not offer the offload switch.
+#
+# App is built with: -DANLASOZ_VULKAN=ON -DVULKAN_SDK=<path to a Vulkan SDK>
+# NNAPI is not an option any more: llama.cpp removed that backend upstream.
+option(ANLASOZ_VULKAN "Build llama.cpp's Vulkan backend for GPU offload" OFF)
+if(ANLASOZ_VULKAN)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+    # The NDK toolchain limits find_package(CONFIG) to its own sysroot, which
+    # hides the host packages the Vulkan shader generator needs (SPIRV-Headers
+    # comes from the SDK, not from Android). Host packages are safe to find
+    # here: none of them are linked into the app.
+    set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
+else()
+    set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+endif()
+
 # Android 15 and later run on 16 KB pages; every shared library in the APK has
 # to be aligned for it or the platform warns and future devices will refuse to
 # load the app. Applies to llama.cpp's libraries too, so it is set globally.
@@ -54,3 +75,8 @@ target_include_directories(anlasoz_llm PRIVATE
     ${LLAMA_SRC}/ggml/include)
 
 target_link_libraries(anlasoz_llm PRIVATE llama android log)
+
+if(ANLASOZ_VULKAN)
+    target_compile_definitions(anlasoz_llm PRIVATE ANLASOZ_VULKAN=1)
+    target_link_libraries(anlasoz_llm PRIVATE vulkan)
+endif()

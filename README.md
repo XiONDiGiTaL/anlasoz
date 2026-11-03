@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Android%2026%2B-3F80FF?style=flat-square" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Android-3F80FF?style=flat-square" />
   <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-2.1-7F52FF?style=flat-square&logo=kotlin&logoColor=white" />
   <img alt="Compose" src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white" />
   <img alt="Model" src="https://img.shields.io/badge/model-cloud%20or%20on--device-ECEDEF?style=flat-square" />
@@ -219,14 +219,16 @@ llama.cpp is compiled into the app, so a GGUF file can run the language work on 
 | Vexium Core 3B | 2.10 GB | Noticeably better explanations; wants ~4 GB of free memory and a 12 GB phone to stay quick. |
 | Qwen2.5 0.5B | 491 MB | Engine smoke test. Too small to trust as a tutor. |
 
-**Measured on a Galaxy S23 Ultra (8 GB, Snapdragon 8 Gen 2, 6 threads)** with the 1.5B model, Android 17:
+**Measured on a Galaxy S23 Ultra (8 GB, Snapdragon 8 Gen 2, 5 threads on the big cores)** with the 1.5B model, Android 17:
 
 | Stage | Result |
 | --- | --- |
 | Model load (memory-mapped) | 1–2 s |
-| Prompt (`~560` tokens after the compact prompt) | 40–55 s |
-| Generation | 8–13 tokens/s |
-| Whole analysis | 60–120 s (the first request after a load also pays a one-off ~10 s weight-repack) |
+| Prompt (`~650` tokens after the compact prompt) | 20–35 s |
+| Generation | 15–20 tokens/s |
+| Whole analysis | 50–70 s; the 0.5B smoke-test model answers the same request in about 25 s |
+
+The numbers worth knowing are the ones that are not the model's fault. Two of them cost an analysis several minutes of wall clock and neither showed up as "slow": a build that carries the Vulkan backend still lets llama.cpp's scheduler split a CPU-only graph with the GPU device, and the graph then runs on roughly one core; and a thread count that includes the little cores makes every layer wait for the 2.0 GHz cores at each barrier. Both are fixed (`model_params.devices`, `LocalEngine.threadsForDevice`), which is where the difference between 60 s and 4+ minutes comes from.
 
 The 3B model loads and runs on the same phone but is memory-bound: the system reclaims its mapped weights between tokens and throughput collapses, which is why it is no longer the recommended default.
 
@@ -234,6 +236,7 @@ The 3B model loads and runs on the same phone but is memory-bound: the system re
 
 - **Verification, not trust.** A download is hashed while it streams and only becomes a model when the byte count and the published SHA-256 match; a partial file stays `.part` and is deleted on failure. Imported files must start with the `GGUF` magic.
 - **Memory guard.** Before loading, the engine compares the file size plus headroom against `MemAvailable`. Refusing with "not enough memory" is deliberate: ggml aborts the process when an allocation fails, and a readable message beats a crash.
+- **GPU offload is offered, not promised.** Settings → _Use the GPU_ hands the model's layers to llama.cpp's Vulkan backend through `VULKAN_SDK` and `-DANLASOZ_VULKAN=ON`; the switch only appears when a GPU backend is compiled in *and* enumerates a device, and such a build raises the minimum to Android 9 because Vulkan 1.1 stubs start at API 28 (a CPU-only build still installs on Android 8.0). Phone drivers are uneven here: on this phone's Adreno 740 the driver rejects every quantised matmul pipeline with `VK_ERROR_UNKNOWN` (a [known Adreno issue](https://github.com/ggml-org/llama.cpp/issues/28635)), so `createComputePipeline` fails, the exception is caught instead of aborting the process, and the model reloads on the CPU. The card says so rather than claiming the GPU is in use. On a driver that accepts the shaders, the same switch moves the matrix work to the GPU. NNAPI is not an option: llama.cpp removed that backend upstream.
 - **ARMv8.2 baseline.** The native build uses `-march=armv8.2-a+dotprod+fp16`; without dot-product kernels quantised matmul is several times slower. Every phone that can hold a 1.5B model in memory has them.
 - **16 KB pages.** All native libraries are linked with `-z max-page-size=16384`, so Android 15's page-size check passes.
 - **Any GGUF works.** _Import .gguf_ takes a file from storage; _Browse models_ opens Hugging Face filtered to GGUF instruct models. One file at a time, 4 GB of context ceiling, 4k context.
@@ -297,7 +300,7 @@ Settings is the fifth surface behind the gear icon:
 
 ## Getting started
 
-**Install** — download `anlasoz-1.0.1-release.apk` from [Releases](https://github.com/XiONDiGiTaL/anlasoz/releases/latest), allow installation from your file manager if Android asks, then open **Settings** and add your endpoint, model and key. The app ships with no credentials and no default provider.
+**Install** — download `anlasoz-1.0.2-release.apk` from [Releases](https://github.com/XiONDiGiTaL/anlasoz/releases/latest), allow installation from your file manager if Android asks, then open **Settings** and add your endpoint, model and key. The app ships with no credentials and no default provider.
 
 **Requirements** — Android Studio Ladybug or newer (or a JDK 17 command line), Android SDK platform 36, and a device or emulator on Android 8.0 (API 26) or newer. The project builds with Gradle 8.13, AGP 8.9.2, Kotlin 2.1.20 and the Compose BOM 2025.05.01.
 
@@ -354,7 +357,7 @@ keytool -genkeypair -v -keystore keys/release.jks -alias anlasoz \
 
 $ANDROID_HOME/build-tools/<version>/apksigner sign \
         --ks keys/release.jks \
-        --out anlasoz-1.0.1-release.apk \
+        --out anlasoz-1.0.2-release.apk \
         app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
@@ -382,6 +385,8 @@ Lint reports 0 errors. The remaining warnings are resource-cleanup suggestions, 
 **Manual verification** on a Galaxy S23 Ultra: analysis round trip and persistence across restart, error and retry with input preserved, copy-to-clipboard, Turkish TTS with a real `tr-TR` voice, microphone permission and live recognition, vocabulary saving from an analysis and from history, practice grading, JSON export through the share sheet, large font scale, landscape, and the signed, minified release build.
 
 **Local engine verification** on the same phone: a 1.5B GGUF downloaded inside the app and accepted only after its SHA-256 matched, loaded with the memory guard and llama.cpp log callback in place, an analysis generated, parsed and persisted (translation, breakdown, vocabulary, tone and confidence all populated), the model surviving a process restart, the 3B model refused cleanly when free memory was short rather than aborting the process, and every native library passing Android 15's 16 KB page-size check.
+
+**GPU offload verification** on the same phone: the switch appears only with the Vulkan backend compiled in, hands every layer to the GPU (`gpu_layers=-1`), the Adreno driver's `createComputePipeline: ErrorUnknown` is caught rather than ending the process, the model reloads on the CPU in the same request, the analysis still completes, and the card reports the fallback. The same build with the CPU pinning removed reproduces the driver rejection on a CPU-only load, which is how the "do not let the scheduler touch the GPU" fix was confirmed.
 
 The screenshots in `docs/` come from the debug build; the cloud screens use a deterministic local endpoint, and `on-device-*.png` are genuine runs of the 1.5B model on the phone.
 

@@ -328,6 +328,7 @@ fun SettingsScreen(
                 onLoad = viewModel::loadDeviceModel,
                 onUnload = viewModel::unloadDeviceModel,
                 onStop = viewModel::stopDeviceGeneration,
+                onGpuOffload = viewModel::setGpuOffload,
             )
         }
 
@@ -656,7 +657,7 @@ private fun ConnectionResult(test: ConnectionTest) {
 }
 
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     title: String,
     description: String,
     checked: Boolean,

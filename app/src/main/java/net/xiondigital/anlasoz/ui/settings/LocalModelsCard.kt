@@ -66,6 +66,7 @@ fun LocalModelsCard(
     onLoad: () -> Unit,
     onUnload: () -> Unit,
     onStop: () -> Unit,
+    onGpuOffload: (Boolean) -> Unit,
 ) {
     var pendingDelete by remember { mutableStateOf<String?>(null) }
 
@@ -97,6 +98,29 @@ fun LocalModelsCard(
 
         Spacer(Modifier.height(12.dp))
         EngineStatus(state)
+
+        val engine = state.engine
+        if (engine is LocalModelState.Ready && engine.gpuRejected) {
+            Spacer(Modifier.height(10.dp))
+            Notice(
+                tone = NoticeTone.Warn,
+                text = "The GPU driver rejected this model's shaders, so it is running on the " +
+                    "CPU. This is a driver limitation in llama.cpp's Vulkan backend on some " +
+                    "Adreno devices, not something the app can work around.",
+            )
+        }
+
+        if (state.gpuAvailable) {
+            Spacer(Modifier.height(12.dp))
+            ToggleRow(
+                title = "Use the GPU",
+                description = "${state.gpuDevice} runs the matrix work over Vulkan. The weights " +
+                    "stay in the same memory, so the model reads long messages in a fraction " +
+                    "of the time. Takes effect the next time the model is loaded.",
+                checked = state.gpuOffload,
+                onCheckedChange = onGpuOffload,
+            )
+        }
 
         Spacer(Modifier.height(14.dp))
         SectionLabel("Installed", color = Xion.MutedDim)
@@ -233,7 +257,8 @@ private fun EngineStatus(state: SettingsUiState) {
         is LocalModelState.Loading -> NoticeTone.Work to "Loading ${engine.fileName}…"
         is LocalModelState.Ready -> NoticeTone.Ok to
             "${engine.fileName} · ${ModelCatalog.formatBytes(engine.bytes)} · " +
-            "${engine.contextSize} tokens · loaded in ${engine.loadMillis / 1000}s"
+                "${engine.contextSize} tokens · loaded in ${engine.loadMillis / 1000}s · " +
+                (if (engine.offloaded) engine.device.ifBlank { "GPU" } else "CPU")
         is LocalModelState.Failed -> NoticeTone.Warn to "${engine.fileName}: ${engine.message}"
     }
     val generating = engine is LocalModelState.Ready && state.generatedTokens > 0

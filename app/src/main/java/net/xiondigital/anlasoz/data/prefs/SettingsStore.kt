@@ -30,6 +30,12 @@ data class AppSettings(
     val preferLocalPronunciation: Boolean = true,
     /** File name inside the app's models directory, used when the preset is "device". */
     val deviceModel: String = "",
+    /**
+     * Hand the model's layers to the GPU (Vulkan) when this build has it. Off by
+     * default: phone drivers differ wildly here, and several Adreno builds reject
+     * the shaders outright, so the safe path is the one that runs everywhere.
+     */
+    val gpuOffload: Boolean = false,
 )
 
 class SettingsStore(private val context: Context) {
@@ -49,6 +55,7 @@ class SettingsStore(private val context: Context) {
             activeThreadId = prefs[Keys.ACTIVE_THREAD] ?: 0L,
             preferLocalPronunciation = prefs[Keys.LOCAL_PRONUNCIATION] ?: true,
             deviceModel = prefs[Keys.DEVICE_MODEL] ?: "",
+            gpuOffload = prefs[Keys.GPU_OFFLOAD] ?: false,
         )
     }
 
@@ -111,6 +118,10 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { it[Keys.DEVICE_MODEL] = fileName }
     }
 
+    suspend fun setGpuOffload(value: Boolean) {
+        context.dataStore.edit { it[Keys.GPU_OFFLOAD] = value }
+    }
+
     private object Keys {
         val PRESET = stringPreferencesKey("provider_preset")
         val BASE_URL = stringPreferencesKey("base_url")
@@ -125,5 +136,6 @@ class SettingsStore(private val context: Context) {
         val ACTIVE_THREAD = longPreferencesKey("active_thread")
         val LOCAL_PRONUNCIATION = booleanPreferencesKey("local_pronunciation")
         val DEVICE_MODEL = stringPreferencesKey("device_model")
+        val GPU_OFFLOAD = booleanPreferencesKey("gpu_offload")
     }
 }

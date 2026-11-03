@@ -70,6 +70,9 @@ data class SettingsUiState(
     val downloads: Map<String, DownloadState> = emptyMap(),
     val importing: Boolean = false,
     val freeStorage: Long = 0L,
+    val gpuAvailable: Boolean = false,
+    val gpuDevice: String = "",
+    val gpuOffload: Boolean = false,
 ) {
     val preset: ProviderPreset get() = ProviderPresets.byId(presetId)
     val onDevice: Boolean get() = presetId == ProviderPresets.device.id
@@ -128,8 +131,21 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
         viewModelScope.launch {
             container.settings.settings.collect { settings ->
-                _state.update { it.copy(deviceModel = settings.deviceModel) }
+                _state.update {
+                    it.copy(deviceModel = settings.deviceModel, gpuOffload = settings.gpuOffload)
+                }
             }
+        }
+        viewModelScope.launch {
+            // Enumerating devices wakes the ggml backend, so keep it off the main
+            // thread and only ask once per screen.
+            val available = withContext(Dispatchers.IO) { container.localEngine.gpuAvailable }
+            val device = if (available) {
+                withContext(Dispatchers.IO) { container.localEngine.gpuDeviceName }
+            } else {
+                ""
+            }
+            _state.update { it.copy(gpuAvailable = available, gpuDevice = device) }
         }
         viewModelScope.launch {
             container.localEngine.state.collect { engine ->
@@ -166,7 +182,10 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
 
     fun selectDeviceModel(fileName: String) {
         viewModelScope.launch {
-            if (_state.value.deviceModel != fileName) container.localEngine.unload()
+            if (_state.value.deviceModel != fileName) {
+                container.localEngine.unload()
+                container.localEngine.clearGpuRejection()
+            }
             container.settings.setDeviceModel(fileName)
             show("$fileName is the on-device model")
         }
@@ -213,6 +232,25 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    fun setGpuOffload(enabled: Boolean) {
+        viewModelScope.launch {
+            container.settings.setGpuOffload(enabled)
+            container.localEngine.clearGpuRejection()
+            // Layers are placed when the model is loaded, so an already loaded
+            // model keeps its old placement until it is loaded again.
+            if (_state.value.engine !is LocalModelState.Idle) container.localEngine.unload()
+            show(
+                if (enabled && !_state.value.gpuAvailable) {
+                    "This build has no GPU backend, so models stay on the CPU"
+                } else if (enabled) {
+                    "GPU offload on — load the model to apply"
+                } else {
+                    "GPU offload off — load the model to apply"
+                },
+            )
+        }
+    }
+
     fun loadDeviceModel() {
         val fileName = _state.value.deviceModel
         if (fileName.isBlank()) {
@@ -221,7 +259,10 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         }
         viewModelScope.launch {
             try {
-                container.localEngine.preload(container.models.file(fileName))
+                container.localEngine.preload(
+                    file = container.models.file(fileName),
+                    offload = _state.value.gpuOffload,
+                )
                 show("$fileName loaded")
             } catch (e: CancellationException) {
                 throw e

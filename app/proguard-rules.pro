@@ -20,3 +20,11 @@
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+
+# JNI: generate() reports token progress through this callback, looked up by name.
+# Without this the minified build renames onProgress and every on-device request
+# dies with NoSuchMethodError the moment the first tokens arrive.
+-keep interface net.xiondigital.anlasoz.ai.LlamaBridge$TokenProgress { *; }
+-keepclassmembers class * implements net.xiondigital.anlasoz.ai.LlamaBridge$TokenProgress {
+    public void onProgress(int);
+}

@@ -201,7 +201,7 @@ class TranslationRepository(
         val settings = settingsStore.settings.first()
         if (settings.presetId == ProviderPresets.device.id) {
             val file = deviceModelFile(settings)
-            localEngine.preload(file)
+            localEngine.preload(file, offload = settings.gpuOffload)
             return localEngine.complete(
                 file = file,
                 messages = listOf(
@@ -210,6 +210,7 @@ class TranslationRepository(
                 ),
                 temperature = 0f,
                 maxTokens = 48,
+                offload = settings.gpuOffload,
             ).trim().take(120)
         }
         val key = keyStore.apiKey
@@ -241,6 +242,7 @@ class TranslationRepository(
                 messages = messages,
                 temperature = temperature,
                 maxTokens = DEVICE_MAX_TOKENS,
+                offload = settings.gpuOffload,
             )
         }
         return ai.complete(
