@@ -219,7 +219,7 @@ llama.cpp is compiled into the app, so a GGUF file can run the language work on 
 | Vexium Core 3B | 2.10 GB | Noticeably better explanations; wants ~4 GB of free memory and a 12 GB phone to stay quick. |
 | Qwen2.5 0.5B | 491 MB | Engine smoke test. Too small to trust as a tutor. |
 
-**Measured on a Galaxy S23 Ultra (8 GB, Snapdragon 8 Gen 2, 6 threads)** with the 1.5B model, Android 15:
+**Measured on a Galaxy S23 Ultra (8 GB, Snapdragon 8 Gen 2, 6 threads)** with the 1.5B model, Android 17:
 
 | Stage | Result |
 | --- | --- |
